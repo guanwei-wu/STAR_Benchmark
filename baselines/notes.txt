@@ -1,0 +1,41 @@
+Text-only using Bert-base-uncased for the text, and then predicting one of 4 classes
+
+❯ python text_only_bert.py
+Evaluating: 100%|██████████████████████████████████████████████████████████████████████████████████████████| 222/222 [00:51<00:00,  4.28it/s]
+Accuracy: 0.2494
+Interaction Accuracy: 0.2339
+Sequence Accuracy: 0.2585
+Prediction Accuracy: 0.2564
+Feasibility Accuracy: 0.2490
+
+==================================================
+GPT-2 model using score from logits
+
+Accuracy: 0.2385
+Interaction Accuracy: 0.2360
+Sequence Accuracy: 0.2434
+Prediction Accuracy: 0.2212
+Feasibility Accuracy: 0.2367
+
+==================================================
+
+Video-only using CLIP features for 32 random frames from the Video, and then predicting one of 4 classes
+
+Validation Accuracy: 0.2509██████████████████████████████████████████████████████████████████████████████▍ | 109/111 [00:03<00:00, 29.06it/s]Category-Wise Accuracy:
+  Interaction: 0.2644
+  Sequence: 0.2432
+  Prediction: 0.2660
+  Feasibility: 0.2224
+
+==================================================
+
+video (clip) and question-choice embeddings (bert) and then choose the highest score choice
+
+Validation Accuracy: 0.2475████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 111/111 [00:13<00:00,  7.54it/s]
+Category-Wise Accuracy:
+  Interaction: 0.2502
+  Sequence: 0.2468
+  Prediction: 0.2484
+  Feasibility: 0.2388
+
+
