@@ -5,8 +5,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mail-type=END,FAIL  # Email when job ends or fails
 #SBATCH --mail-user=gdhanuka@andrew.cmu.edu # Replace with your email address
-#SBATCH --output=logs/slurm-%A.out  # Standard output log file (per task)
-#SBATCH --error=logs/slurm-%A.err   # Standard error log file (per task)
+#SBATCH --output=logs/slurm-%A-videotf.out  # Standard output log file (per task)
+#SBATCH --error=logs/slurm-%A-videotf.err   # Standard error log file (per task)
 
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate diffusion

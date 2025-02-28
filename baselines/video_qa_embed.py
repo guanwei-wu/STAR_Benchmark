@@ -2,16 +2,19 @@ import json
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from torch.optim import Adam
+from torch.optim import Adagrad
 from tqdm import tqdm
 import numpy as np
 from transformers import AutoTokenizer, AutoModel
 import random
 from collections import defaultdict
 import warnings
+
 warnings.filterwarnings("ignore")
 import os
 import pickle
+from sentence_transformers import SentenceTransformer
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -92,18 +95,23 @@ class VideoQADataset(Dataset):
             "all_text_inputs": all_text_inputs,
         }
 
+
 def collate_fn(batch):
     """
     Custom collate function to handle batching of (question + choice) pairs.
     """
-    video_feats = torch.stack([item["video_feats"] for item in batch])  # Shape: (batch_size, num_frames, feature_dim)
+    video_feats = torch.stack(
+        [item["video_feats"] for item in batch]
+    )  # Shape: (batch_size, num_frames, feature_dim)
     questions = [item["question"] for item in batch]
     all_choices = [item["choices"] for item in batch]  # List of lists
     answer_idxs = torch.tensor([item["answer_idx"] for item in batch], dtype=torch.long)
     categories = [item["category"] for item in batch]
     all_text_inputs = []
     for item in batch:
-        all_text_inputs = all_text_inputs + item["all_text_inputs"] # shape: (batch_size * num_choices,)
+        all_text_inputs = (
+            all_text_inputs + item["all_text_inputs"]
+        )  # shape: (batch_size * num_choices,)
 
     return {
         "video_feats": video_feats,
@@ -114,27 +122,42 @@ def collate_fn(batch):
         "category": categories,
     }
 
+
 # Define Model for MCQA
 class VideoQAModel(nn.Module):
-    def __init__(self, text_model_name, input_dim, hidden_dim, text_hidden_dim, hidden_dim1, hidden_dim2):
+    def __init__(
+        self,
+        text_model_name,
+        input_dim,
+        hidden_dim,
+        text_hidden_dim,
+        hidden_dim1,
+        hidden_dim2,
+    ):
         super(VideoQAModel, self).__init__()
 
         # Text Encoder (e.g., BERT)
-        self.text_encoder = AutoModel.from_pretrained(text_model_name)
+        self.text_encoder = SentenceTransformer(text_model_name).to("cuda")
+
+        # freeze text encoder
+        for param in self.text_encoder.parameters():
+            param.requires_grad = False
 
         # Reduce text embedding dimension if needed
-        self.text_fc = nn.Linear(self.text_encoder.config.hidden_size, text_hidden_dim)
+        self.text_fc = nn.Linear(768, text_hidden_dim)
 
         # Video Encoder (RNN)
         self.video_rnn = nn.LSTM(input_dim, hidden_dim, batch_first=True)
 
         # Fusion Layer and Scoring Layer
-        self.fc_fusion1 = nn.Linear(hidden_dim + text_hidden_dim, hidden_dim1)  # Score per choice
+        self.fc_fusion1 = nn.Linear(
+            hidden_dim + text_hidden_dim, hidden_dim1
+        )  # Score per choice
         self.fc_fusion2 = nn.Linear(hidden_dim1, 1)  # Score per choice
         nn.init.xavier_uniform_(self.fc_fusion1.weight)
         nn.init.xavier_uniform_(self.fc_fusion2.weight)
 
-    def forward(self, video_feats, text_input_ids, text_attention_mask):
+    def forward(self, video_feats, text_inputs):
         """
         Args:
             video_feats: Tensor of shape (batch_size * num_choices, num_frames, input_dim)
@@ -145,14 +168,17 @@ class VideoQAModel(nn.Module):
             logits: Tensor of shape (batch_size, num_choices)
         """
 
-        # Encode Text Features
-        text_outputs = self.text_encoder(
-            input_ids=text_input_ids, attention_mask=text_attention_mask
-        )
+        # # Encode Text Features
+        # text_outputs = self.text_encoder(
+        #     input_ids=text_input_ids, attention_mask=text_attention_mask
+        # )
 
-        text_embeds = self.text_fc(
-            text_outputs.last_hidden_state[:, 0]
-        )  # CLS token embedding
+        # text_embeds = self.text_fc(
+        #     text_outputs.last_hidden_state[:, 0]
+        # )  # CLS token embedding
+        text_embeds = self.text_encoder.encode(text_inputs)
+        text_embeds = torch.from_numpy(text_embeds).float().to("cuda")
+        text_embeds = self.text_fc(text_embeds)
 
         # Encode Video Features
         _, (video_embeds, _) = self.video_rnn(video_feats)  # Use final hidden state
@@ -186,31 +212,33 @@ def train(model, dataloader, optimizer, criterion, device):
         optimizer.zero_grad()
 
         # Video features
-        video_feats = batch["video_feats"].to(device)  # Shape: (batch_size, num_frames, feature_dim)
+        video_feats = batch["video_feats"].to(
+            device
+        )  # Shape: (batch_size, num_frames, feature_dim)
 
-        # Tokenize all (question + choice) pairs
-        tokenized_inputs = tokenizer(
-            batch["all_text_inputs"],
-            padding=True,
-            truncation=True,
-            return_tensors="pt"
-        ).to(device)
+        # # Tokenize all (question + choice) pairs
+        # tokenized_inputs = tokenizer(
+        #     batch["all_text_inputs"], padding=True, truncation=True, return_tensors="pt"
+        # ).to(device)
 
         # Repeat video features for each choice
         batch_size = video_feats.size(0)
         num_choices = 4
-        video_feats_repeated = video_feats.repeat_interleave(num_choices, dim=0)  # Shape: (batch_size * num_choices, num_frames, feature_dim)
+        video_feats_repeated = video_feats.repeat_interleave(
+            num_choices, dim=0
+        )  # Shape: (batch_size * num_choices, num_frames, feature_dim)
 
         # Forward pass
         logits = model(
             video_feats=video_feats_repeated,
-            text_input_ids=tokenized_inputs["input_ids"],
-            text_attention_mask=tokenized_inputs["attention_mask"],
+            # text_input_ids=tokenized_inputs["input_ids"],
+            text_inputs=batch["all_text_inputs"],
+            # text_attention_mask=tokenized_inputs["attention_mask"],
         )
 
         # Compute loss
         loss = criterion(logits, batch["answer_idx"].to(device))
-        
+
         loss.backward()
         optimizer.step()
 
@@ -218,7 +246,6 @@ def train(model, dataloader, optimizer, criterion, device):
 
     avg_loss = total_loss / len(dataloader)
     print(f"Training Loss: {avg_loss:.4f}")
-
 
 
 # Evaluation Function
@@ -241,12 +268,12 @@ def evaluate(model, dataloader, device):
             video_feats = batch["video_feats"].to(device)
 
             # Tokenize all (question + choice) pairs
-            tokenized_inputs = tokenizer(
-                batch["all_text_inputs"],
-                padding=True,
-                truncation=True,
-                return_tensors="pt"
-            ).to(device)
+            # tokenized_inputs = tokenizer(
+            #     batch["all_text_inputs"],
+            #     padding=True,
+            #     truncation=True,
+            #     return_tensors="pt",
+            # ).to(device)
 
             # Repeat video features for each choice
             batch_size = video_feats.size(0)
@@ -256,8 +283,9 @@ def evaluate(model, dataloader, device):
             # Forward pass
             logits = model(
                 video_feats=video_feats_repeated,
-                text_input_ids=tokenized_inputs["input_ids"],
-                text_attention_mask=tokenized_inputs["attention_mask"],
+                # text_input_ids=tokenized_inputs["input_ids"],
+                text_inputs=batch["all_text_inputs"],
+                # text_attention_mask=tokenized_inputs["attention_mask"],
             )
 
             predictions = torch.argmax(logits, dim=1)  # Predicted class
@@ -299,34 +327,37 @@ if __name__ == "__main__":
         "/data/user_data/gdhanuka/STAR_dataset/charades_clip_features/clip/ViT-B_32/"
     )
 
-    batch_size = 32
+    batch_size = 16
     input_dim = 512  # Feature dimension of precomputed CLIP features
     hidden_dim = 512  # Hidden dimension of LSTM
     text_hidden_dim = 512  # Reduced text embedding dimension
     num_sampled_frames = 64  # Number of frames to sample per video
-    learning_rate = 1e-3
+    learning_rate = 5e-3
     num_epochs = 50  # Number of training epochs
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Load Tokenizer for Text Encoder (e.g., BERT)
-    text_model_name = "deepset/tinyroberta-squad2"  # You can replace this with any Hugging Face model
+    text_model_name = "sentence-transformers/all-mpnet-base-v2"
     tokenizer = AutoTokenizer.from_pretrained(text_model_name, use_fast=True)
+    # freeze text encoder
+    # for param in tokenizer.parameters():
+    #     param.requires_grad = False
 
     # Load Dataset and Dataloader
     dataset_train = VideoQADataset(
         json_file=train_pkl,
         video_features_dir=clip_features_path,
         num_frames=num_sampled_frames,
-        preload=True
+        preload=False,
     )
 
-    # dataset_train = torch.utils.data.Subset(dataset_train, range(2))
+    # dataset_train = torch.utils.data.Subset(dataset_train, range(1000))
 
     dataset_val = VideoQADataset(
         json_file=val_pkl,
         video_features_dir=clip_features_path,
         num_frames=num_sampled_frames,
-        preload=True
+        preload=False,
     )
 
     # dataset_val = torch.utils.data.Subset(dataset_val, range(100))
@@ -361,12 +392,13 @@ if __name__ == "__main__":
         hidden_dim=hidden_dim,
         text_hidden_dim=text_hidden_dim,
         hidden_dim1=256,
-        hidden_dim2=32
+        hidden_dim2=32,
     ).to(device)
 
     # Define Optimizer and Loss Function
-    optimizer = Adam(model.parameters(), lr=learning_rate)
+    optimizer = Adagrad(model.parameters(), lr=learning_rate, weight_decay=1e-5)
     criterion = nn.CrossEntropyLoss()
+    best_val_accuracy = 0
 
     # Training Loop
     for epoch in tqdm(range(num_epochs), desc="Epochs"):
@@ -380,4 +412,8 @@ if __name__ == "__main__":
             device=device,
         )
 
-        evaluate(model=model, dataloader=dataloader_val, device=device)
+        val_acc, _ = evaluate(model=model, dataloader=dataloader_val, device=device)
+
+        if val_acc > best_val_accuracy:
+            best_val_accuracy = val_acc
+            print(f"New best validation accuracy: {best_val_accuracy:.4f}")

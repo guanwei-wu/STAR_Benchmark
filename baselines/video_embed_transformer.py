@@ -9,9 +9,12 @@ from transformers import AutoTokenizer, AutoModel
 import random
 from collections import defaultdict
 import warnings
+from sentence_transformers import SentenceTransformer
+
 warnings.filterwarnings("ignore")
 import os
 import pickle
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -92,18 +95,23 @@ class VideoQADataset(Dataset):
             "all_text_inputs": all_text_inputs,
         }
 
+
 def collate_fn(batch):
     """
     Custom collate function to handle batching of (question + choice) pairs.
     """
-    video_feats = torch.stack([item["video_feats"] for item in batch])  # Shape: (batch_size, num_frames, feature_dim)
+    video_feats = torch.stack(
+        [item["video_feats"] for item in batch]
+    )  # Shape: (batch_size, num_frames, feature_dim)
     questions = [item["question"] for item in batch]
     all_choices = [item["choices"] for item in batch]  # List of lists
     answer_idxs = torch.tensor([item["answer_idx"] for item in batch], dtype=torch.long)
     categories = [item["category"] for item in batch]
     all_text_inputs = []
     for item in batch:
-        all_text_inputs = all_text_inputs + item["all_text_inputs"] # shape: (batch_size * num_choices,)
+        all_text_inputs = (
+            all_text_inputs + item["all_text_inputs"]
+        )  # shape: (batch_size * num_choices,)
 
     return {
         "video_feats": video_feats,
@@ -115,64 +123,149 @@ def collate_fn(batch):
     }
 
 
-class CrossModalTransformer(nn.Module):
-    def __init__(self, text_model_name, input_dim, hidden_dim, num_heads, num_layers):
-        super(CrossModalTransformer, self).__init__()
-
-        # Text Encoder (e.g., RoBERTa)
-        self.text_encoder = AutoModel.from_pretrained(text_model_name)
-        self.text_fc = nn.Linear(self.text_encoder.config.hidden_size, hidden_dim)
-
-        # Video Feature Encoder (Linear Projection)
-        self.video_fc = nn.Linear(input_dim, hidden_dim)
-
-        # Cross-Modal Transformer
-        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=num_heads)
-        self.cross_modal_transformer = nn.TransformerEncoder(encoder_layer, num_layers)
-
-        # Classification Head
-        self.classifier = nn.Linear(hidden_dim, 1)  # Score per choice
-
-    def forward(self, video_feats, text_input_ids, text_attention_mask):
+class CrossAttentionModule(nn.Module):
+    def __init__(self, embed_dim, num_heads=8, dropout=0.1):
         """
+        Cross-Attention module for combining text and video features.
         Args:
-            video_feats: Tensor of shape (batch_size * num_choices, num_frames, input_dim)
-            text_input_ids: Tensor of shape (batch_size * num_choices, seq_len) [Tokenized question/choice]
-            text_attention_mask: Tensor of shape (batch_size * num_choices, seq_len) [Attention mask for text]
+            embed_dim (int): Dimension of the input embeddings.
+            num_heads (int): Number of attention heads.
+            dropout (float): Dropout rate for attention weights.
+        """
+        super(CrossAttentionModule, self).__init__()
+        self.multihead_attn = nn.MultiheadAttention(
+            embed_dim, num_heads, dropout=dropout
+        )
+        self.layer_norm = nn.LayerNorm(embed_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.ReLU(),
+            nn.Linear(embed_dim * 4, embed_dim),
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, query, key, value):
+        """
+        Forward pass for cross-attention.
+        Args:
+            query (Tensor): Query tensor (e.g., text embeddings) of shape (seq_len_q, batch_size, embed_dim).
+            key (Tensor): Key tensor (e.g., video embeddings) of shape (seq_len_kv, batch_size, embed_dim).
+            value (Tensor): Value tensor (e.g., video embeddings) of shape (seq_len_kv, batch_size, embed_dim).
+        Returns:
+            Tensor: Output after cross-attention and feed-forward layers.
+        """
+        # Cross-Attention
+        attn_output, _ = self.multihead_attn(query, key, value)
+        query = query + self.dropout(attn_output)  # Residual connection
+        query = self.layer_norm(query)
+
+        # Feed-Forward Network
+        ffn_output = self.ffn(query)
+        output = query + self.dropout(ffn_output)  # Residual connection
+        output = self.layer_norm(output)
+
+        return output
+
+
+class VideoQAModelWithCrossAttention(nn.Module):
+    def __init__(
+        self,
+        text_model_name,
+        video_embed_dim=512,
+        text_embed_dim=768,
+        hidden_dim=512,
+        num_heads=8,
+    ):
+        """
+        Video Question Answering Model with Cross-Attention.
+        Args:
+            text_model_name (str): Name of the pre-trained SentenceTransformer model for text encoding.
+            video_embed_dim (int): Dimension of video embeddings.
+            text_embed_dim (int): Dimension of text embeddings from SentenceTransformer.
+            hidden_dim (int): Hidden dimension for cross-attention and feed-forward layers.
+            num_heads (int): Number of attention heads in cross-attention.
+        """
+        super(VideoQAModelWithCrossAttention, self).__init__()
+
+        # Text Encoder
+        self.text_encoder = SentenceTransformer(text_model_name)
+        # freeze the text encoder
+        for param in self.text_encoder.parameters():
+            param.requires_grad = False
+
+        # Reduce dimensions if needed
+        self.text_fc = nn.Linear(text_embed_dim, hidden_dim)
+
+        # Video Encoder (LSTM)
+        self.video_rnn = nn.LSTM(video_embed_dim, hidden_dim, batch_first=True)
+
+        # Cross-Attention Module
+        self.cross_attention = CrossAttentionModule(hidden_dim, num_heads=num_heads)
+
+        # Scoring Layer
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+        )
+
+    def forward(self, video_feats, text_inputs):
+        """
+        Forward pass for the model.
+
+        Args:
+            video_feats: Tensor of shape (batch_size * num_choices, num_frames, video_embed_dim).
+            text_inputs: List of strings containing question-choice pairs.
 
         Returns:
-            logits: Tensor of shape (batch_size, num_choices)
+            logits: Tensor of shape (batch_size, num_choices).
         """
-        # import ipdb; ipdb.set_trace()
-        batch_size_num_choices = video_feats.size(0)
 
         # Encode Text Features
-        text_outputs = self.text_encoder(
-            input_ids=text_input_ids,
-            attention_mask=text_attention_mask
-        )
-        text_embeds = text_outputs.last_hidden_state  # Shape: (batch_size * num_choices, seq_len, hidden_dim)
+        text_embeds = torch.tensor(
+            self.text_encoder.encode(text_inputs), dtype=torch.float32
+        ).to(video_feats.device)
+
+        # Reduce Text Embedding Dimensions
+        text_embeds = self.text_fc(
+            text_embeds
+        )  # Shape: (batch_size * num_choices, hidden_dim)
+
+        # Reshape Text Embeddings for Attention
+        text_embeds = text_embeds.unsqueeze(
+            0
+        )  # Shape: (1, batch_size * num_choices, hidden_dim)
 
         # Encode Video Features
-        text_embeds = self.text_fc(text_embeds)  # Shape: (batch_size * num_choices, seq_len, hidden_dim)
-        video_embeds = self.video_fc(video_feats)  # Shape: (batch_size * num_choices, num_frames, hidden_dim)
+        _, (video_embeds, _) = self.video_rnn(
+            video_feats
+        )  # Use final hidden state from LSTM
+        video_embeds = video_embeds[-1]  # Shape: (batch_size * num_choices, hidden_dim)
 
-        # Combine Text and Video Features
-        combined_embeds = torch.cat([text_embeds, video_embeds], dim=1)
-        combined_embeds = combined_embeds.permute(1, 0, 2)  # Shape: (seq_len=2, batch_size * num_choices, hidden_dim)
+        # Reshape Video Embeddings for Attention
+        video_embeds = video_embeds.unsqueeze(
+            0
+        )  # Shape: (1, batch_size * num_choices, hidden_dim)
 
-        video_attention_mask = torch.ones(video_embeds.size()[:2], dtype=torch.long).to(video_feats.device)  # Shape: (batch_size * num_choices, num_frames)
-        combined_attention_mask = torch.cat([text_attention_mask, video_attention_mask], dim=1) 
+        # Cross-Attention between Text and Video Features
+        attended_features = self.cross_attention(
+            text_embeds, video_embeds, video_embeds
+        )
 
-        # Pass through Cross-Modal Transformer
-        cross_modal_output = self.cross_modal_transformer(
-            combined_embeds, 
-            src_key_padding_mask=(combined_attention_mask==0))  # Shape: (seq_len=2, batch_size * num_choices, hidden_dim)
+        # Remove sequence dimension after attention
+        attended_features = attended_features.squeeze(
+            0
+        )  # Shape: (batch_size * num_choices, hidden_dim)
 
-        # Use the CLS token representation (first token) for classification
-        logits = self.classifier(cross_modal_output[0])  # Shape: (batch_size * num_choices, 1)
+        # Scoring Layer
+        logits = self.mlp(attended_features).squeeze(
+            -1
+        )  # Shape: (batch_size * num_choices)
 
         return logits.view(-1, 4)  # Reshape to (batch_size, num_choices)
+
 
 # Training Function
 def train(model, dataloader, optimizer, criterion, device):
@@ -185,13 +278,10 @@ def train(model, dataloader, optimizer, criterion, device):
         # Video features
         video_feats = batch["video_feats"].to(device)
 
-        # Tokenize all (question + choice) pairs
-        tokenized_inputs = tokenizer(
-            batch["all_text_inputs"],
-            padding=True,
-            truncation=True,
-            return_tensors="pt"
-        ).to(device)
+        # # Tokenize all (question + choice) pairs
+        # tokenized_inputs = tokenizer(
+        #     batch["all_text_inputs"], padding=True, truncation=True, return_tensors="pt"
+        # ).to(device)
 
         # Repeat video features for each choice
         batch_size = video_feats.size(0)
@@ -201,8 +291,7 @@ def train(model, dataloader, optimizer, criterion, device):
         # Forward pass
         logits = model(
             video_feats=video_feats_repeated,
-            text_input_ids=tokenized_inputs["input_ids"],
-            text_attention_mask=tokenized_inputs["attention_mask"],
+            text_inputs=batch["all_text_inputs"],
         )
 
         # Compute loss
@@ -215,6 +304,7 @@ def train(model, dataloader, optimizer, criterion, device):
 
     avg_loss = total_loss / len(dataloader)
     print(f"Training Loss: {avg_loss:.4f}")
+
 
 # Evaluation Function
 def evaluate(model, dataloader, device):
@@ -236,12 +326,12 @@ def evaluate(model, dataloader, device):
             video_feats = batch["video_feats"].to(device)
 
             # Tokenize all (question + choice) pairs
-            tokenized_inputs = tokenizer(
-                batch["all_text_inputs"],
-                padding=True,
-                truncation=True,
-                return_tensors="pt"
-            ).to(device)
+            # tokenized_inputs = tokenizer(
+            #     batch["all_text_inputs"],
+            #     padding=True,
+            #     truncation=True,
+            #     return_tensors="pt",
+            # ).to(device)
 
             # Repeat video features for each choice
             batch_size = video_feats.size(0)
@@ -251,8 +341,7 @@ def evaluate(model, dataloader, device):
             # Forward pass
             logits = model(
                 video_feats=video_feats_repeated,
-                text_input_ids=tokenized_inputs["input_ids"],
-                text_attention_mask=tokenized_inputs["attention_mask"],
+                text_inputs=batch["all_text_inputs"],
             )
 
             predictions = torch.argmax(logits, dim=1)  # Predicted class
@@ -295,34 +384,35 @@ if __name__ == "__main__":
     )
 
     batch_size = 32
-    input_dim = 512   # CLIP feature dimension
+    input_dim = 512  # CLIP feature dimension
     hidden_dim = 512  # Hidden dimension for transformer
-    num_heads = 4     # Number of attention heads in transformer layers
-    num_layers = 2    # Number of transformer layers
+    num_heads = 4  # Number of attention heads in transformer layers
+    num_layers = 2  # Number of transformer layers
     learning_rate = 1e-3
     num_epochs = 100
     num_sampled_frames = 64
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Load Tokenizer for Text Encoder (e.g., BERT)
-    text_model_name = "bert-base-uncased"  # You can replace this with any Hugging Face model
-    tokenizer = AutoTokenizer.from_pretrained(text_model_name, use_fast=True)
+    text_model_name = "sentence-transformers/all-mpnet-base-v2"
+    # tokenizer = AutoTokenizer.from_pretrained(text_model_name, use_fast=True)
 
     # Load Dataset and Dataloader
     dataset_train = VideoQADataset(
         json_file=train_pkl,
         video_features_dir=clip_features_path,
         num_frames=num_sampled_frames,
-        preload=True
+        preload=True,
     )
-
+    # dataset_train = torch.utils.data.Subset(dataset_train, range(1000))  # For demonstration purposes
 
     dataset_val = VideoQADataset(
         json_file=val_pkl,
         video_features_dir=clip_features_path,
         num_frames=num_sampled_frames,
-        preload=True
+        preload=True,
     )
+    # dataset_val = torch.utils.data.Subset(dataset_train, range(100))  # For demonstration purposes
 
     # dataset_val = dataset_train
 
@@ -349,17 +439,20 @@ if __name__ == "__main__":
     print("Val data size = ", len(dataset_val))
 
     # Initialize Model and Move to Device
-    model = CrossModalTransformer(
+    model = VideoQAModelWithCrossAttention(
         text_model_name=text_model_name,
-        input_dim=input_dim,
+        video_embed_dim=512,
+        text_embed_dim=768,
         hidden_dim=hidden_dim,
-        num_heads=num_heads,
-        num_layers=num_layers,
-    ).to(device)
+        num_heads=8,
+    ).to("cuda")
 
     # Define Optimizer and Loss Function
-    optimizer = Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adagrad(
+        model.parameters(), lr=learning_rate, weight_decay=1e-5
+    )
     criterion = nn.CrossEntropyLoss()
+    best_val_acc = 0
 
     # Training Loop
     for epoch in tqdm(range(num_epochs), desc="Epochs"):
@@ -373,4 +466,8 @@ if __name__ == "__main__":
             device=device,
         )
 
-        evaluate(model=model, dataloader=dataloader_val, device=device)
+        val_acc, _ = evaluate(model=model, dataloader=dataloader_val, device=device)
+
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            print(f"New best validation accuracy: {best_val_acc:.4f}")
