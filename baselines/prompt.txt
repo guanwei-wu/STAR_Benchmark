@@ -1,0 +1,11 @@
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: {question}
+
+Options:
+A. {option_a}
+B. {option_b}
+C. {option_c}
+D. {option_d}
+
+Your answer (just the letter A, B, C, or D):
