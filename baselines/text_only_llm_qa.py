@@ -235,6 +235,7 @@ def evaluate(model, dataloader):
         
         print("prompts:", prompts[0])
         print("answer_options:", answer_options[0])
+        print("answer_options:", answer_options[0])
         # print("prompts:", prompts[0])
         # print("prompts:", prompts[0]) 
          
@@ -304,18 +305,30 @@ def evaluate(model, dataloader):
     return accuracy, category_accuracies
 
 
-# Main Function
 def main():
-    # Paths and Parameters
-    val_json = "~/STAR/data/STAR_val.json"
-    prompt_template_file = '~/STAR/baselines/prompt.txt'
+    # Set up command line argument parser
+    import argparse
+    parser = argparse.ArgumentParser(description='Evaluate LLM QA model on multiple-choice questions')
     
-    # Choose a model from Hugging Face
-    # model_name = "meta-llama/Llama-2-7b-hf"  # Original Llama 2
-    model_name = "google/gemma-2-2b-it"  # Gemma 2 Instruct 2B - smaller and should work well
-    # model_name = "meta-llama/Llama-3.1-8B-Instruct"  # Llama 3.1 Instruct 8B - if you have more VRAM
+    # Add arguments
+    parser.add_argument('--val_json', type=str, default="~/STAR/data/STAR_val.json",
+                        help='Path to validation JSON file')
+    parser.add_argument('--prompt_template', type=str, default='~/STAR/baselines/prompt.txt',
+                        help='Path to prompt template file')
+    parser.add_argument('--model', type=str, default="google/gemma-2-2b-it",
+                        help='Hugging Face model name to use')
+    parser.add_argument('--batch_size', type=int, default=4,
+                        help='Batch size for evaluation')
     
-    batch_size = 8  # Increase batch size for faster evaluation
+    # Parse arguments
+    args = parser.parse_args()
+    
+    # Setup parameters from arguments
+    val_json = args.val_json
+    prompt_template_file = args.prompt_template
+    model_name = args.model
+    batch_size = args.batch_size
+    
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     print(f"Device: {device}")
@@ -350,8 +363,11 @@ def main():
     
     # Create directory for results
     import datetime
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_dir = f"results_{timestamp}"
+    # timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_base = os.path.basename(model_name).replace("/", "_")
+    prompt_base = os.path.splitext(os.path.basename(prompt_template_file))[0]
+    results_dir = f"{model_base}_{prompt_base}_results"
+    
     os.makedirs(results_dir, exist_ok=True)
     
     # Evaluate
@@ -395,3 +411,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+# python text_only_llm_qa.py --model google/gemma-2-2b-it --batch_size 8 --val_json ~/STAR/data/STAR_val.json --prompt_template ~/STAR/baselines/prompt.txt
+# python text_only_llm_qa.py --model google/gemma-2-2b-it --batch_size 8 --val_json ~/STAR/data/STAR_val.json --prompt_template ~/STAR/baselines/prompt_3_shot.txt
+# python text_only_llm_qa.py --model google/gemma-2-2b-it --batch_size 8 --val_json ~/STAR/data/STAR_val.json --prompt_template ~/STAR/baselines/prompt_10_shot.txt

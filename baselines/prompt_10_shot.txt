@@ -1,0 +1,121 @@
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: What is the person able to do after walking through the doorway?
+Options:
+A. Put down the box.
+B. Throw the food.
+C. Take the cup/glass/bottle.
+D. Wash the mirror.
+
+Your answer (just the letter A, B, C, or D): C
+
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: What is the person able to do after walking through the doorway?
+Options:
+A. Sit on the floor.
+B. Throw the broom.
+C. Take the food.
+D. Hold the phone/camera.
+
+Your answer (just the letter A, B, C, or D): D
+
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: What is the person able to do after eating the medicine?
+Options:
+A. Wash the table.
+B. Take the laptop.
+C. Hold the food.
+D. Put down the towel.
+
+Your answer (just the letter A, B, C, or D): B
+
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: What is the person able to do after lying on the bed?
+Options:
+A. Put down the pillow.
+B. Tidy up the clothes.
+C. Take the sandwich.
+D. Take the cup/glass/bottle.
+
+Your answer (just the letter A, B, C, or D): B
+
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: What is the person able to do after drinking from the cup/glass/bottle?
+Options:
+A. Sit at the table.
+B. Put down the dish.
+C. Take the blanket.
+D. Open the laptop.
+
+Your answer (just the letter A, B, C, or D): A
+
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: Which object is the person able to wash after taking the towel?
+Options:
+A. The clothes.
+B. The table.
+C. The dish.
+D. The window.
+
+Your answer (just the letter A, B, C, or D): B
+
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: Which object is the person able to put down after sitting at the table?
+Options:
+A. The clothes.
+B. The broom.
+C. The bag.
+D. The laptop.
+
+Your answer (just the letter A, B, C, or D): A
+
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: Which object is the person able to throw after watching outside the window?
+Options:
+A. The blanket.
+B. The bag.
+C. The clothes.
+D. The food.
+
+Your answer (just the letter A, B, C, or D): B
+
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: Which object is the person able to lie on after taking the pillow?
+Options:
+A. The bed.
+B. The floor.
+C. The sofa/couch.
+D. The mirror.
+
+Your answer (just the letter A, B, C, or D): C
+
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: Which object would the person throw next after they walk through the doorway?
+Options:
+A. The towel.
+B. The broom.
+C. The blanket.
+D. The food.
+
+Your answer (just the letter A, B, C, or D): A
+
+Answer the following multiple-choice question by selecting the correct option (A, B, C, or D).
+
+Question: {question}
+
+Options:
+A. {option_a}
+B. {option_b}
+C. {option_c}
+D. {option_d}
+
+Your answer (just the letter A, B, C, or D):
