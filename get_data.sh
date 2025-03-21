@@ -46,4 +46,5 @@ gdown.download(url_val_updated, output_val_updated, quiet=False)
 gdown.download(url_train_updated, output_train_updated, quiet=False)
 EOF
 
+python convert_json_to_pkl.py  # generate STAR_train.pkl, STAR_val.pkl
 

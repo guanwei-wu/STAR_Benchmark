@@ -13,6 +13,7 @@ import torch.nn.functional as F
 import re
 import bisect
 import shutil
+import json
 
 warnings.filterwarnings("ignore")
 import os
@@ -224,15 +225,17 @@ class VideoQAModel:
 
 
 if __name__ == "__main__":
-    val_pkl = "/data/user_data/gdhanuka/STAR_dataset/STAR_val.pkl"
-
+    # val_pkl = "/data/user_data/gdhanuka/STAR_dataset/STAR_val.pkl"
+    val_pkl = "data/STAR_val.pkl"
+    video_dir = "data/Charades_v1_480"
+    
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dataset = VideoQADataset(val_pkl, sampling_fps=4)
+    dataset = VideoQADataset(val_pkl, sampling_fps=4, video_dir=video_dir)
     # batched inference not working!!
     dataloader = DataLoader(
         dataset,
         batch_size=1,
-        shuffle=True,
+        shuffle=False,  # disable to easily reproduce
         num_workers=4,
         pin_memory=True,
         # collate_fn=collate_fn,
@@ -242,31 +245,60 @@ if __name__ == "__main__":
 
     video_qa_model = VideoQAModel()
 
-    for batch in tqdm(dataloader):
-        video_frames = batch["video_frames"][0].to(device)
-        question = batch["question"][0]
-        choices = batch["choices"]
-        answer_idx = batch["answer_idx"][0]
-        category = batch["category"][0]
-        all_text_inputs = batch["all_text_inputs"][0]
-        # print(video_frames.shape, question, choices, answer_idx, category)
-        answer = video_qa_model.video_qa(video_frames, question, choices)
-        # answer = int((answer.split("ASSISTANT: ")[1]).split("\n")[0])
-        answer = int(re.search(r"\d+", answer.split("ASSISTANT")[-1]).group())
-        print(
-            f"Question: {question}, Choices: {choices}, Predicted Index: {answer}, True index: {answer_idx+1}, True Answer: {choices[answer_idx]}"
-        )
-        category_total[category] += 1
-        if answer == answer_idx + 1:
-            category_correct[category] += 1
-        print("Category-wise accuracy:")
+    import json
+    from tqdm import tqdm
+
+    # File paths
+    results_file = "analysis/video_llava_results.jsonl"
+    final_accuracy_file = "analysis/video_llava_final_accuracy.txt"
+
+    # Open results file in append mode
+    with open(results_file, "a") as results_f:
+        with tqdm(dataloader, desc="Evaluating", dynamic_ncols=True) as pbar:
+            for batch in pbar:
+                video_frames = batch["video_frames"][0].to(device)
+                question = batch["question"][0]
+                choices = batch["choices"]
+                answer_idx = batch["answer_idx"][0]
+                category = batch["category"][0]
+                all_text_inputs = batch["all_text_inputs"][0]
+
+                # Get model prediction
+                answer = video_qa_model.video_qa(video_frames, question, choices)
+                answer = int(re.search(r"\d+", answer.split("ASSISTANT")[-1]).group())
+
+                # Save result to JSONL file
+                json_record = {
+                    "question": question,
+                    "choices": choices,
+                    "predicted_index": answer,
+                    "true_index": (answer_idx + 1).item(),  # a tensor
+                    "category": category
+                }
+                results_f.write(json.dumps(json_record) + "\n")  # Append each example as a new line
+
+                # Update accuracy counters
+                category_total[category] += 1
+                if answer == answer_idx + 1:
+                    category_correct[category] += 1
+
+                # Compute overall accuracy
+                overall_acc = sum(category_correct.values()) / sum(category_total.values())
+
+                # Update tqdm bar with accuracy
+                accuracy_info = {cat: f"{category_correct[cat] / category_total[cat]:.3f}" for cat in category_total}
+                accuracy_info["Overall"] = f"{overall_acc:.3f}"
+                pbar.set_postfix(accuracy_info)
+
+    # Save final category-wise accuracy to a text file
+    with open(final_accuracy_file, "w") as acc_f:
+        acc_f.write("Final Category-Wise Accuracy:\n")
         for category in category_total:
-            print(
-                f"{category}: {category_correct[category] / category_total[category]}"
-            )
-        print(
-            f"Overall accuracy: {sum(category_correct.values()) / sum(category_total.values())}"
-        )
+            acc_f.write(f"{category}: {category_correct[category] / category_total[category]:.4f}\n")
+        acc_f.write(f"\nOverall accuracy: {sum(category_correct.values()) / sum(category_total.values()):.4f}\n")
+
+    print(f"Results saved to {results_file} and final accuracy saved to {final_accuracy_file}")
+
 
     # for batch in tqdm(dataloader):
     #     video_batch = batch["video_frames"].to("cuda", non_blocking=True)
