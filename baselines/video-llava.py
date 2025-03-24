@@ -15,7 +15,7 @@ import bisect
 import shutil
 import json
 
-warnings.filterwarnings("ignore")
+# warnings.filterwarnings("ignore")
 import os
 import pickle
 from sentence_transformers import SentenceTransformer
@@ -130,7 +130,7 @@ class VideoQADataset(Dataset):
         # video_frames = self.read_video_pyav(container, indices)
         # video_frames = torch.from_numpy(video_frames).permute(0, 3, 1, 2).float()
 
-        video_frames = self.read_video_pyav2(video_path, start, end, num_frames=8)
+        video_frames = self.read_video_pyav2(video_path, start, end, num_frames=16)
         video_frames = torch.from_numpy(video_frames).permute(0, 3, 1, 2).float()
 
         all_text_inputs = []
@@ -200,7 +200,7 @@ class VideoQAModel:
         choice_with_idx = [f'"{i+1}": {choice}\n' for i, choice in enumerate(choices)]
         prompt = f"USER: <video>\n According to the video choose the correct answer, {question} \n {choice_with_idx} ASSISTANT: "
         inputs = self.processor(
-            text=prompt, videos=video_frames, return_tensors="pt", max_length=4096
+            text=prompt, videos=video_frames, return_tensors="pt"
         ).to("cuda")
         return self.generate(inputs, max_new_tokens=max_new_tokens)[0]
 
