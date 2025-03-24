@@ -130,8 +130,8 @@ class VideoQADataset(Dataset):
         # video_frames = self.read_video_pyav(container, indices)
         # video_frames = torch.from_numpy(video_frames).permute(0, 3, 1, 2).float()
 
-        video_frames = self.read_video_pyav2(video_path, start, end, num_frames=16)
-        video_frames = torch.from_numpy(video_frames).permute(0, 3, 1, 2).float()
+        video_frames = self.read_video_pyav2(video_path, start, end, num_frames=8)
+        video_frames = torch.from_numpy(video_frames).permute(0, 3, 1, 2).float() # (bs, channel, h, w)
 
         all_text_inputs = []
         for choice in choices:
@@ -200,7 +200,7 @@ class VideoQAModel:
         choice_with_idx = [f'"{i+1}": {choice}\n' for i, choice in enumerate(choices)]
         prompt = f"USER: <video>\n According to the video choose the correct answer, {question} \n {choice_with_idx} ASSISTANT: "
         inputs = self.processor(
-            text=prompt, videos=video_frames, return_tensors="pt"
+            text=prompt, videos=video_frames, return_tensors="pt", max_length=4096
         ).to("cuda")
         return self.generate(inputs, max_new_tokens=max_new_tokens)[0]
 
@@ -225,12 +225,13 @@ class VideoQAModel:
 
 
 if __name__ == "__main__":
-    # val_pkl = "/data/user_data/gdhanuka/STAR_dataset/STAR_val.pkl"
-    val_pkl = "data/STAR_val.pkl"
-    video_dir = "data/Charades_v1_480"
+    val_pkl = "/data/user_data/gdhanuka/STAR_dataset/STAR_val.pkl"
+    # val_pkl = "data/STAR_val.pkl"
+    video_dir = "/data/user_data/gdhanuka/STAR_dataset/Charades_v1_480"
+    # video_dir = "data/Charades_v1_480"
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dataset = VideoQADataset(val_pkl, sampling_fps=4, video_dir=video_dir)
+    dataset = VideoQADataset(val_pkl, sampling_fps=8, video_dir=video_dir)
     # batched inference not working!!
     dataloader = DataLoader(
         dataset,
@@ -249,8 +250,8 @@ if __name__ == "__main__":
     from tqdm import tqdm
 
     # File paths
-    results_file = "analysis/video_llava_results.jsonl"
-    final_accuracy_file = "analysis/video_llava_final_accuracy.txt"
+    results_file = "/home/gdhanuka/STAR_Benchmark/analysis/video_llava_results2.jsonl"
+    final_accuracy_file = "/home/gdhanuka/STAR_Benchmark/analysis/video_llava_final_accuracy2.txt"
 
     # Open results file in append mode
     with open(results_file, "a") as results_f:
