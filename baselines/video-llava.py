@@ -232,13 +232,47 @@ class VideoQADataset(Dataset):
 
 
 class VideoQAModel:
-    def __init__(self):
-        self.model = VideoLlavaForConditionalGeneration.from_pretrained(
-            "LanguageBind/Video-LLaVA-7B-hf",
-            torch_dtype=torch.float16,
-            device_map="auto",
-            attn_implementation="flash_attention_2",
-        ).to("cuda")
+    def __init__(self, load_in_bits=16):
+
+        device = 'cuda'
+        compute_dtype = 'fp16'
+        double_quant = True
+        quant_type = 'nf4'
+
+        compute_dtype = (torch.float16 if compute_dtype == 'fp16' else (torch.bfloat16 if compute_dtype == 'bf16' else torch.float32))
+        
+        bnb_model_from_pretrained_args = {}
+        if load_in_bits in [4, 8]:
+            from transformers import BitsAndBytesConfig
+            bnb_model_from_pretrained_args.update(dict(
+                device_map={"": device},
+                # load_in_4bit=load_in_bits == 4,
+                # load_in_8bit=load_in_bits == 8,
+                quantization_config=BitsAndBytesConfig(
+                    load_in_4bit=load_in_bits == 4,
+                    load_in_8bit=load_in_bits == 8,
+                    llm_int8_skip_modules=["mm_projector"],
+                    llm_int8_threshold=6.0,
+                    llm_int8_has_fp16_weight=False,
+                    bnb_4bit_compute_dtype=compute_dtype,
+                    bnb_4bit_use_double_quant=double_quant,
+                    bnb_4bit_quant_type=quant_type # {'fp4', 'nf4'}
+                )
+            ))
+
+            self.model = VideoLlavaForConditionalGeneration.from_pretrained(
+                "LanguageBind/Video-LLaVA-7B-hf",
+                torch_dtype=compute_dtype,
+                attn_implementation="flash_attention_2",
+                **bnb_model_from_pretrained_args
+            )
+        else:
+            self.model = VideoLlavaForConditionalGeneration.from_pretrained(
+                "LanguageBind/Video-LLaVA-7B-hf",
+                torch_dtype=torch.float16,
+                device_map="auto",
+                attn_implementation="flash_attention_2",
+            ).to("cuda")
         self.processor = VideoLlavaProcessor.from_pretrained(
             "LanguageBind/Video-LLaVA-7B-hf"
         )
@@ -308,13 +342,19 @@ class VideoQAModel:
 
 
 if __name__ == "__main__":
-    val_pkl = "/data/user_data/gdhanuka/STAR_dataset/STAR_val.pkl"
-    # val_pkl = "data/STAR_val.pkl"
-    video_dir = "/data/user_data/gdhanuka/STAR_dataset/Charades_v1_480"
-    # video_dir = "data/Charades_v1_480"
+    # val_pkl = "/data/user_data/gdhanuka/STAR_dataset/STAR_val.pkl"
+    val_pkl = "data/STAR_val.pkl"
+    # video_dir = "/data/user_data/gdhanuka/STAR_dataset/Charades_v1_480"
+    video_dir = "data/Charades_v1_480"
+
+    # File paths
+    # results_file = "/home/gdhanuka/STAR_Benchmark/analysis/video_llava_results2.jsonl"
+    results_file = "analysis/video_llava_4_frames_results.jsonl"
+    # final_accuracy_file = "/home/gdhanuka/STAR_Benchmark/analysis/video_llava_final_accuracy2.txt"
+    final_accuracy_file = "analysis/video_llava_4_frames_final_accuracy.txt"
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dataset = VideoQADataset(val_pkl, video_dir=video_dir, sampling_fps=4, num_frames=8, use_fps=False)
+    dataset = VideoQADataset(val_pkl, video_dir=video_dir, sampling_fps=4, num_frames=4, use_fps=False)
     # batched inference not working!!
     dataloader = DataLoader(
         dataset,
@@ -327,14 +367,7 @@ if __name__ == "__main__":
     category_correct = defaultdict(int)
     category_total = defaultdict(int)
 
-    video_qa_model = VideoQAModel()
-
-    import json
-    from tqdm import tqdm
-
-    # File paths
-    results_file = "/home/gdhanuka/STAR_Benchmark/analysis/video_llava_results2.jsonl"
-    final_accuracy_file = "/home/gdhanuka/STAR_Benchmark/analysis/video_llava_final_accuracy2.txt"
+    video_qa_model = VideoQAModel(load_in_bits=16)  # set to load_in_bits=4 to save GPU memory
 
     # Open results file in append mode
     with open(results_file, "a") as results_f:
@@ -375,8 +408,9 @@ if __name__ == "__main__":
                 }
 
                 # print type of each item in json_record
-                for key, val in json_record.items():
-                    print(f"{key}: {type(val)}")
+                # for key, val in json_record.items():
+                #     print(f"{key}: {type(val)}")
+                # print('answer',answer)
 
                 results_f.write(json.dumps(json_record) + "\n")  # Append each example as a new line
                 results_f.flush()
