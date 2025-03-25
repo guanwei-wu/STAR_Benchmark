@@ -14,6 +14,7 @@ import re
 import bisect
 import shutil
 import json
+from time import perf_counter
 
 # warnings.filterwarnings("ignore")
 import os
@@ -29,7 +30,9 @@ class VideoQADataset(Dataset):
         self,
         json_file,
         video_dir="/data/user_data/gdhanuka/STAR_dataset/Charades_v1_480",
-        sampling_fps=8,
+        sampling_fps=4,
+        num_frames=8,
+        use_fps=True
     ):
         """
         Args:
@@ -41,6 +44,8 @@ class VideoQADataset(Dataset):
             self.data = pickle.load(f)
         self.video_dir = video_dir
         self.sampling_fps = sampling_fps
+        self.num_frames = num_frames
+        self.use_fps = use_fps
 
     def __len__(self):
         return len(self.data)
@@ -103,13 +108,66 @@ class VideoQADataset(Dataset):
         assert (
             len(frames) == num_frames
         ), f"Got {len(frames)} frames but should be {num_frames}. Check the indices: {indices};, start_id: {start_id}, end_id: {end_id}. Len of video is {len(av_timestamps)} frames."
-        return np.stack([x.to_ndarray(format="rgb24") for x in frames])
+        return np.stack([x.to_ndarray(format="rgb24") for x in frames]), indices
+
+    def read_video_pyav3(self, video_path, start, end, sampling_fps=4):
+        """Reads a video clip from start-end timestamps and samples frames at specified FPS"""
+        container = av.open(video_path)
+        video = container.streams.video[0]
+        
+        # Calculate number of frames needed based on duration and sampling FPS
+        duration = end - start
+        num_frames = int(round(sampling_fps * duration))
+        num_frames = max(1, num_frames)  # Ensure at least 1 frame
+
+        # Get sorted presentation timestamps
+        av_timestamps = [
+            int(packet.pts * video.time_base)
+            for packet in container.demux(video)
+            if packet.pts is not None
+        ]
+        av_timestamps.sort()
+
+        # Find frame indices bounding our clip
+        start_id = bisect.bisect_left(av_timestamps, start)
+        end_id = bisect.bisect_left(av_timestamps, end)
+
+        # Expand window for short clips
+        if end_id - start_id < 10:
+            end_id += 10
+            start_id -= 10
+
+        # Clamp to valid range
+        end_id = min(len(av_timestamps) - 1, end_id)
+        start_id = max(0, start_id)
+
+        # Generate sampling indices
+        indices = np.linspace(start_id, end_id, num_frames, dtype=int)
+
+        # Extract frames
+        frames = []
+        container.seek(0)
+        for i, frame in enumerate(container.decode(video=0)):
+            if i > end_id:
+                break
+            if i >= start_id and i in indices:
+                frames.append(frame)
+        
+        assert len(frames) == num_frames, (
+            f"Frame sampling failed: Expected {num_frames}, got {len(frames)}. "
+            f"Time range: {start}-{end}s ({duration}s), Sampling FPS: {sampling_fps}."
+        )
+        
+        return np.stack([x.to_ndarray(format="rgb24") for x in frames]), indices
+
 
     def __getitem__(self, idx):
+        
         item = self.data[idx]
         video_id = item["video_id"]
         start, end = item["start"], item["end"]
         question = item["question"]
+        question_id = item["question_id"]
         choices = [choice["choice"] for choice in item["choices"]]
         answer_idx = next(
             i
@@ -118,25 +176,17 @@ class VideoQADataset(Dataset):
         )
 
         video_path = os.path.join(self.video_dir, f"{video_id}.mp4")
-        # container = av.open(video_path)
-        # total_frames = container.streams.video[0].frames
-        # frame_rate = container.streams.video[0].average_rate
-        # clip_duration = end - start
-        # num_frames = int(self.sampling_fps * clip_duration)
-        # # use the part of the video between start and end
-        # indices = np.linspace(
-        #     start * frame_rate, end * frame_rate, num_frames
-        # ).astype(int)
-        # video_frames = self.read_video_pyav(container, indices)
-        # video_frames = torch.from_numpy(video_frames).permute(0, 3, 1, 2).float()
-
-        video_frames = self.read_video_pyav2(video_path, start, end, num_frames=8)
-        video_frames = torch.from_numpy(video_frames).permute(0, 3, 1, 2).float() # (bs, channel, h, w)
+        start_time = perf_counter()
+        if self.use_fps:
+            video_frames, frame_idx = self.read_video_pyav3(video_path, start, end, sampling_fps=self.sampling_fps)
+        else:
+            video_frames, frame_idx = self.read_video_pyav2(video_path, start, end, num_frames=self.num_frames)
+        video_frames = torch.from_numpy(video_frames).permute(0, 3, 1, 2).float() # (#frames, channel, h, w)
 
         all_text_inputs = []
         for choice in choices:
             all_text_inputs.append(f"{question} [SEP] {choice}")
-
+        end = perf_counter()
         return {
             "video_frames": video_frames,  # Video features
             "question": question,
@@ -144,38 +194,41 @@ class VideoQADataset(Dataset):
             "answer_idx": answer_idx,
             "category": item["question_id"].split("_")[0],  # Question category
             "all_text_inputs": all_text_inputs,
+            "data_proc_time": end-start,
+            "question_id": question_id,
+            "frame_ids": frame_idx
         }
 
 
-def collate_fn(batch):
-    """Handles variable-sized video frames using smart padding"""
-    # Separate video frames and metadata
-    videos = [item["video_frames"] for item in batch]
-    questions = [item["question"] for item in batch]
-    choices = [item["choices"] for item in batch]
-    answer_idxs = torch.stack([torch.tensor(item["answer_idx"]) for item in batch])
+# def collate_fn(batch):
+#     """Handles variable-sized video frames using smart padding"""
+#     # Separate video frames and metadata
+#     videos = [item["video_frames"] for item in batch]
+#     questions = [item["question"] for item in batch]
+#     choices = [item["choices"] for item in batch]
+#     answer_idxs = torch.stack([torch.tensor(item["answer_idx"]) for item in batch])
 
-    # Pad videos to max dimensions in batch
-    max_frames = max(vid.shape[0] for vid in videos)
-    max_height = max(vid.shape[2] for vid in videos)
-    max_width = max(vid.shape[3] for vid in videos)
+#     # Pad videos to max dimensions in batch
+#     max_frames = max(vid.shape[0] for vid in videos)
+#     max_height = max(vid.shape[2] for vid in videos)
+#     max_width = max(vid.shape[3] for vid in videos)
 
-    padded_videos = []
-    for vid in videos:
-        # Pad: (width_left, width_right, height_top, height_bottom, frames_front, frames_back)
-        pad_width = max_width - vid.shape[3]
-        pad_height = max_height - vid.shape[2]
-        pad_frames = max_frames - vid.shape[0]
+#     padded_videos = []
+#     for vid in videos:
+#         # Pad: (width_left, width_right, height_top, height_bottom, frames_front, frames_back)
+#         pad_width = max_width - vid.shape[3]
+#         pad_height = max_height - vid.shape[2]
+#         pad_frames = max_frames - vid.shape[0]
 
-        padded = F.pad(vid, (0, pad_width, 0, pad_height, 0, 0, 0, pad_frames))
-        padded_videos.append(padded)
+#         padded = F.pad(vid, (0, pad_width, 0, pad_height, 0, 0, 0, pad_frames))
+#         padded_videos.append(padded)
 
-    return {
-        "video_frames": torch.stack(padded_videos),
-        "question": questions,
-        "choices": choices,
-        "answer_idx": answer_idxs,
-    }
+#     return {
+#         "video_frames": torch.stack(padded_videos),
+#         "question": questions,
+#         "choices": choices,
+#         "answer_idx": answer_idxs,
+#     }
 
 
 class VideoQAModel:
@@ -191,18 +244,48 @@ class VideoQAModel:
         )
 
     def generate(self, inputs, max_new_tokens=500):
-        out = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
-        return self.processor.batch_decode(
-            out, skip_special_tokens=True, clean_up_tokenization_spaces=True
+        outputs = self.model.generate(
+            **inputs, max_new_tokens=max_new_tokens,
+            return_dict_in_generate=True, output_scores=True
         )
+        decoded = self.processor.batch_decode(
+            outputs.sequences,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=True
+        )
+        first_token_probs = torch.nn.functional.softmax(outputs.scores[0], dim=-1)
+        
+        # Get token IDs for numbers 1-4
+        token_ids = [self.processor.tokenizer.convert_tokens_to_ids(str(i)) for i in [1,2,3,4]]
+        
+        # Create probability dictionary for each sample in batch
+        prob_list = []
+        for batch_idx in range(first_token_probs.shape[0]):
+            probs = [
+                first_token_probs[batch_idx, token_ids[i]].item()
+                for i in range(4)
+            ]
+            prob_list.append(probs)
+        
+        logits_list = []
+        for batch_idx in range(outputs.scores[0].shape[0]):
+            logits = [
+                outputs.scores[0][batch_idx, token_ids[i]].item()
+                for i in range(4)
+            ]
+            logits_list.append(logits)
+
+
+        return decoded, prob_list, logits_list
 
     def video_qa(self, video_frames, question, choices, max_new_tokens=500):
         choice_with_idx = [f'"{i+1}": {choice}\n' for i, choice in enumerate(choices)]
-        prompt = f"USER: <video>\n According to the video choose the correct answer, {question} \n {choice_with_idx} ASSISTANT: "
+        prompt = f"USER: <video>\n {question} \n {choice_with_idx} Answer with the option's index from the given choices directly. \n ASSISTANT: "
         inputs = self.processor(
             text=prompt, videos=video_frames, return_tensors="pt", max_length=4096
         ).to("cuda")
-        return self.generate(inputs, max_new_tokens=max_new_tokens)[0]
+        decoded, probs, logits = self.generate(inputs, max_new_tokens=max_new_tokens)
+        return decoded[0], probs[0], prompt, logits[0]
 
     def video_qa_batch(self, video_batch, questions, choices_batch):
         prompts = []
@@ -231,7 +314,7 @@ if __name__ == "__main__":
     # video_dir = "data/Charades_v1_480"
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dataset = VideoQADataset(val_pkl, sampling_fps=8, video_dir=video_dir)
+    dataset = VideoQADataset(val_pkl, video_dir=video_dir, sampling_fps=4, num_frames=8, use_fps=False)
     # batched inference not working!!
     dataloader = DataLoader(
         dataset,
@@ -257,26 +340,46 @@ if __name__ == "__main__":
     with open(results_file, "a") as results_f:
         with tqdm(dataloader, desc="Evaluating", dynamic_ncols=True) as pbar:
             for batch in pbar:
+                start_time = perf_counter()
+                data_time = batch["data_proc_time"][0]
                 video_frames = batch["video_frames"][0].to(device)
                 question = batch["question"][0]
                 choices = batch["choices"]
                 answer_idx = batch["answer_idx"][0]
                 category = batch["category"][0]
                 all_text_inputs = batch["all_text_inputs"][0]
+                question_id = batch["question_id"][0]
+                frame_ids = batch["frame_ids"][0]
 
                 # Get model prediction
-                answer = video_qa_model.video_qa(video_frames, question, choices)
+                answer, probs, prompt, logits = video_qa_model.video_qa(video_frames, question, choices)
+                answer_raw = answer
                 answer = int(re.search(r"\d+", answer.split("ASSISTANT")[-1]).group())
+                end_time = perf_counter()
 
                 # Save result to JSONL file
                 json_record = {
+                    "question_id": question_id,
                     "question": question,
                     "choices": choices,
-                    "predicted_index": answer,
-                    "true_index": (answer_idx + 1).item(),  # a tensor
-                    "category": category
+                    "pred_ans_idx": answer-1,
+                    "true_index": (answer_idx).item(),  # a tensor
+                    "category": category,
+                    "raw_response": answer_raw,
+                    "prompt": prompt,
+                    "frame_ids": frame_ids.numpy().tolist(),
+                    "inference_time": (end_time - start_time),
+                    "data_time": data_time,
+                    "confidence": probs,
+                    "logits": logits
                 }
+
+                # print type of each item in json_record
+                for key, val in json_record.items():
+                    print(f"{key}: {type(val)}")
+
                 results_f.write(json.dumps(json_record) + "\n")  # Append each example as a new line
+                results_f.flush()
 
                 # Update accuracy counters
                 category_total[category] += 1
