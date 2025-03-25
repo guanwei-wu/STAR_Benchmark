@@ -369,7 +369,7 @@ if __name__ == "__main__":
                     "prompt": prompt,
                     "frame_ids": frame_ids.numpy().tolist(),
                     "inference_time": (end_time - start_time),
-                    "data_time": data_time,
+                    "data_time": data_time.item(),
                     "confidence": probs,
                     "logits": logits
                 }
