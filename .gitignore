@@ -133,3 +133,6 @@ lightning_logs/
 *.log
 *.err
 *.out
+
+# exceptions
+!analysis/results/*

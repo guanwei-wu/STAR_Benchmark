@@ -1,0 +1,7 @@
+Final Category-Wise Accuracy:
+Interaction: 0.3920
+Sequence: 0.3648
+Prediction: 0.4054
+Feasibility: 0.3755
+
+Overall accuracy: 0.3783
