@@ -440,7 +440,7 @@ if __name__ == "__main__":
     dataloader = DataLoader(
         dataset,
         batch_size=1,
-        shuffle=False,  # disable to easily reproduce
+        shuffle=True,  # disable to easily reproduce
         num_workers=4,
         pin_memory=True,
         # collate_fn=collate_fn,
@@ -571,7 +571,7 @@ python baselines/video-llava_vot.py \
     --video_dir "/data/user_data/jamesdin/STAR/data/Charades_v1_480" \
     --results_file "analysis/video_llava_vot_results.jsonl" \
     --final_accuracy_file "analysis/video_llava_vot_final_accuracy.txt" \
-    --load_in_bits 4 \
+    --load_in_bits 16 \
     --num_frames 8
 
 

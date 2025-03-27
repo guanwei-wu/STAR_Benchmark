@@ -73,7 +73,7 @@ class VideoQAModel:
             "LanguageBind/Video-LLaVA-7B-hf"
         )
 
-    def generate(self, inputs, max_new_tokens=500):
+    def generate(self, inputs, max_new_tokens=100):
         
         outputs = self.model.generate(
             **inputs, max_new_tokens=max_new_tokens,
@@ -114,28 +114,49 @@ class VideoQAModel:
 
     def video_qa_cot(self, video_frames, question, choices, max_new_tokens=500):
         
-        choice_with_idx = [f'"{i+1}": {choice}\n' for i, choice in enumerate(choices)]
+        # prompt = f"""
+        # USER: <video>
+        # Question: {question}
+        # Choices:
+        # {''.join([f"{i+1}. {choice}" + chr(10) for i, choice in enumerate(choices)])}
+        # Please carefully watch the video and reason through the visual content to answer the question based on the given choices.
+
+        # First, explain your reasoning in a few sentences describing what you observed in the video and how it relates to the question. Then, clearly state your final answer using the format:
+        # Answer: <index>
+
+        # ASSISTANT:
+        # """
         
-        prompt = f"""
-        USER: <video>
-        Question: {question}
-        Choices:
-        {''.join([f"{i+1}. {choice}" + chr(10) for i, choice in enumerate(choices)])}
-        Please carefully watch the video and reason through the visual content to answer the question based on the given choices.
-
-        First, explain your reasoning in a few sentences describing what you observed in the video and how it relates to the question. Then, clearly state your final answer using the format:
-        Answer: <index>
-
-        ASSISTANT:
-        """
+        choice_with_idx = ''.join([f"{i+1}. {choice}" + chr(10) for i, choice in enumerate(choices)])
+        
+        prompt = f"USER: <video>\nQuestion: {question}\nChoices:\n{choice_with_idx}\nPlease carefully watch the video and reason through the visual content to answer the question based on the given choices.\n\nFirst, explain your reasoning in a few sentences describing what you observed in the video and how it relates to the question. Finally, you must state your final answer using the format:\nAnswer: <index>\n\nASSISTANT:\n"
         
         inputs = self.processor(
-            text=prompt, videos=video_frames, return_tensors="pt", max_length=4096
+            text=prompt, videos=video_frames, return_tensors="pt"
         ).to("cuda")
         
         decoded, probs, logits = self.generate(inputs, max_new_tokens=max_new_tokens)
         
         return decoded[0], probs[0], prompt, logits[0]
+
+
+def extract_answer_index(answer_raw):
+    # Try matching "Answer: <index>" or "Answer :<index>" (case-insensitive)
+    match = re.search(r"(?i)answer\s*[:\-]?\s*(\d+)", answer_raw)
+    if match:
+        return int(match.group(1))
+
+    # Try matching "is <index>"
+    match = re.search(r"\bis\s+(\d+)", answer_raw)
+    if match:
+        return int(match.group(1))
+
+    # Try matching the last number in the string
+    match = re.search(r"(\d+)(?!.*\d)", answer_raw)
+    if match:
+        return int(match.group(1))
+
+    return None
 
 
 if __name__ == "__main__":
@@ -159,12 +180,12 @@ if __name__ == "__main__":
     num_frames = args.num_frames
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dataset = VideoQADataset(val_pkl, video_dir=video_dir, sampling_fps=4, num_frames=4, use_fps=False)
+    dataset = VideoQADataset(val_pkl, video_dir=video_dir, sampling_fps=4, num_frames=num_frames, use_fps=False)
     # batched inference not working!!
     dataloader = DataLoader(
         dataset,
         batch_size=1,
-        shuffle=False,  # disable to easily reproduce
+        shuffle=True,  # disable to easily reproduce
         num_workers=4,
         pin_memory=True,
         # collate_fn=collate_fn,
@@ -172,7 +193,7 @@ if __name__ == "__main__":
     category_correct = defaultdict(int)
     category_total = defaultdict(int)
 
-    video_qa_model = VideoQAModel(load_in_bits=16)  # set to load_in_bits=4 to save GPU memory
+    video_qa_model = VideoQAModel(load_in_bits=load_in_bits)  # set to load_in_bits=4 to save GPU memory
 
     # Open results file in append mode
     with open(results_file, "a") as results_f:
@@ -183,6 +204,7 @@ if __name__ == "__main__":
                 video_frames = batch["video_frames"][0].to(device)
                 question = batch["question"][0]
                 choices = batch["choices"]
+                choices = [choice[0] for choice in choices]
                 answer_idx = batch["answer_idx"][0]
                 category = batch["category"][0]
                 all_text_inputs = batch["all_text_inputs"][0]
@@ -193,9 +215,10 @@ if __name__ == "__main__":
                 answer, probs, prompt, logits = video_qa_model.video_qa_cot(video_frames, question, choices)
                 answer_raw = answer
                 
-                match = re.search(r"Answer:\s*(\d+)", answer_raw)
+                match = extract_answer_index(answer_raw)
+
                 if match:
-                    answer = int(match.group(1))
+                    answer = match
                 else:
                     print(answer_raw)  # can redirect to some filess
                     answer = 1  # default answer
@@ -285,7 +308,7 @@ python baselines/video-llava_cot.py \
     --video_dir "/data/user_data/jamesdin/STAR/data/Charades_v1_480" \
     --results_file "analysis/video_llava_cot_results.jsonl" \
     --final_accuracy_file "analysis/video_llava_cot_final_accuracy.txt" \
-    --load_in_bits 4 \
+    --load_in_bits 16 \
     --num_frames 8
 
 
