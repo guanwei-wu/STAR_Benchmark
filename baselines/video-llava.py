@@ -109,8 +109,12 @@ class VideoQAModel:
         return decoded, prob_list, logits_list
 
     def video_qa(self, video_frames, question, choices, max_new_tokens=500):
-        choice_with_idx = [f'"{i+1}": {choice}\n' for i, choice in enumerate(choices)]
-        prompt = f"USER: <video>\n {question} \n {choice_with_idx} Answer with the option's index from the given choices directly. \n ASSISTANT: "
+        choice_with_idx = [f"{i+1}: {choice[0]}" for i, choice in enumerate(choices)]
+        choice_str = "\n".join(choice_with_idx)
+        prompt = f"USER: <video>\n {question} \n {choice_str} \n Answer with only the option's index from the given choices directly. \n ASSISTANT: "
+        # print(prompt)
+        # choice_with_idx = [f'"{i+1}": {choice}\n' for i, choice in enumerate(choices)]
+        # prompt = f"USER: <video>\n {question} \n {choice_with_idx} Answer with the option's index from the given choices directly. \n ASSISTANT: "
         inputs = self.processor(
             text=prompt, videos=video_frames, return_tensors="pt", max_length=4096
         ).to("cuda")
@@ -158,7 +162,7 @@ if __name__ == "__main__":
     num_frames = args.num_frames
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dataset = VideoQADataset(val_pkl, video_dir=video_dir, sampling_fps=4, num_frames=4, use_fps=False)
+    dataset = VideoQADataset(val_pkl, video_dir=video_dir, sampling_fps=4, num_frames=8, use_fps=False)
     # batched inference not working!!
     dataloader = DataLoader(
         dataset,
