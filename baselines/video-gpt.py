@@ -15,7 +15,7 @@ import torchvision.transforms.functional as TF
 import matplotlib.pyplot as plt
 
 from openai import OpenAI
-from video_llava import VideoQADataset
+from video_qa_dataset import VideoQADataset
 
 class GPTImageQAEvaluator:
     def __init__(self, api_key, model_name="gpt-4o", base_url="https://cmu.litellm.ai"):
