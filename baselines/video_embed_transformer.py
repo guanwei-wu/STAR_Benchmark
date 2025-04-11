@@ -47,6 +47,7 @@ class VideoQADataset(Dataset):
         item = self.data[idx]
         video_id = item["video_id"]
         question = item["question"]
+        question_id = item["question_id"]
         choices = [choice["choice"] for choice in item["choices"]]
         answer_idx = next(
             i
@@ -67,6 +68,7 @@ class VideoQADataset(Dataset):
         if total_frames == 0:
             # return zeros
             sampled_feats = np.zeros((self.num_frames, 512))
+            sampled_indices = []
         elif total_frames >= self.num_frames:
             sampled_indices = sorted(
                 random.sample(range(total_frames), self.num_frames)
@@ -78,6 +80,7 @@ class VideoQADataset(Dataset):
                 video_feats, self.num_frames // total_frames + 1, axis=0
             )
             sampled_feats = sampled_feats[: self.num_frames]
+            sampled_indices = list(range(total_frames))
 
         assert sampled_feats.shape == (self.num_frames, 512)
         sampled_feats = torch.from_numpy(sampled_feats).float()
@@ -93,6 +96,8 @@ class VideoQADataset(Dataset):
             "answer_idx": answer_idx,
             "category": item["question_id"].split("_")[0],  # Question category
             "all_text_inputs": all_text_inputs,
+            "question_id": question_id,
+            "frame_ids": sampled_indices
         }
 
 
@@ -120,6 +125,8 @@ def collate_fn(batch):
         "all_text_inputs": all_text_inputs,
         "answer_idx": answer_idxs,
         "category": categories,
+        "question_id": [item["question_id"] for item in batch],
+        "frame_ids": [item["frame_ids"] for item in batch],
     }
 
 
@@ -307,52 +314,79 @@ def train(model, dataloader, optimizer, criterion, device):
 
 
 # Evaluation Function
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, device, results_file):
     model.eval()
     correct = 0
     total = 0
 
     category_correct = defaultdict(int)
     category_total = defaultdict(int)
+    with open(results_file, "w") as results_f:
+        with torch.no_grad():
+            with tqdm(dataloader, total=len(dataloader), desc="Evaluating", dynamic_ncols=True) as pbar:
+                for batch in pbar:
 
-    with torch.no_grad():
+                    video_feats = batch["video_feats"].to(device)
+                    answer_idx = batch["answer_idx"].to(device)
+                    categories = batch["category"]
 
-        for batch in tqdm(dataloader, total=len(dataloader), desc="Evaluating"):
+                    video_feats = batch["video_feats"].to(device)
 
-            video_feats = batch["video_feats"].to(device)
-            answer_idx = batch["answer_idx"].to(device)
-            categories = batch["category"]
+                    # Tokenize all (question + choice) pairs
+                    # tokenized_inputs = tokenizer(
+                    #     batch["all_text_inputs"],
+                    #     padding=True,
+                    #     truncation=True,
+                    #     return_tensors="pt",
+                    # ).to(device)
 
-            video_feats = batch["video_feats"].to(device)
+                    # Repeat video features for each choice
+                    batch_size = video_feats.size(0)
+                    num_choices = 4
+                    video_feats_repeated = video_feats.repeat_interleave(num_choices, dim=0)
 
-            # Tokenize all (question + choice) pairs
-            # tokenized_inputs = tokenizer(
-            #     batch["all_text_inputs"],
-            #     padding=True,
-            #     truncation=True,
-            #     return_tensors="pt",
-            # ).to(device)
+                    # Forward pass
+                    logits = model(
+                        video_feats=video_feats_repeated,
+                        text_inputs=batch["all_text_inputs"],
+                    )
 
-            # Repeat video features for each choice
-            batch_size = video_feats.size(0)
-            num_choices = 4
-            video_feats_repeated = video_feats.repeat_interleave(num_choices, dim=0)
+                    predictions = torch.argmax(logits, dim=1)  # Predicted class
+                    probabilities = nn.functional.softmax(logits, dim=1)
 
-            # Forward pass
-            logits = model(
-                video_feats=video_feats_repeated,
-                text_inputs=batch["all_text_inputs"],
-            )
+                    correct += (predictions == answer_idx).sum().item()
+                    total += len(answer_idx)
 
-            predictions = torch.argmax(logits, dim=1)  # Predicted class
+                    # Update category-wise counts
+                    for i in range(len(categories)):
+                        category_correct[categories[i]] += int(predictions[i] == answer_idx[i])
+                        category_total[categories[i]] += 1
 
-            correct += (predictions == answer_idx).sum().item()
-            total += len(answer_idx)
+                    for i in range(len(predictions)):
+                        # # for each item in batch, print the question_id, the pred ans, the true ans, probabilities and logits
+                        # print(
+                        #     f"Question ID: {batch['question_id'][i]}, Pred Answer: {predictions[i]}, True Answer: {answer_idx[i]}, Probabilities: {probabilities[i].cpu().numpy().tolist()}, Logits: {logits[i].cpu().numpy().tolist()}"
+                        # )
+                        json_record = {
+                            "question_id": batch["question_id"][i],
+                            "pred_ans_idx": predictions[i].item(),
+                            "true_ans_idx": answer_idx[i].item(),
+                            "confidence": probabilities[i].cpu().numpy().tolist(),
+                            "logits": logits[i].cpu().numpy().tolist(),
+                            "frame_ids": batch["frame_ids"][i],
+                        }
 
-            # Update category-wise counts
-            for i in range(len(categories)):
-                category_correct[categories[i]] += int(predictions[i] == answer_idx[i])
-                category_total[categories[i]] += 1
+                        results_f.write(json.dumps(json_record) + "\n")  # Append each example as a new line
+                        results_f.flush()
+
+                    # Compute overall accuracy
+                    overall_acc = sum(category_correct.values()) / sum(category_total.values())
+
+                    # Update tqdm bar with accuracy
+                    accuracy_info = {cat: f"{category_correct[cat] / category_total[cat]:.3f}" for cat in category_total}
+                    accuracy_info["Overall"] = f"{overall_acc:.3f}"
+                    pbar.set_postfix(accuracy_info)
+
 
     accuracy = correct / total
     print(f"Validation Accuracy: {accuracy:.4f}")
@@ -389,7 +423,7 @@ if __name__ == "__main__":
     num_heads = 4  # Number of attention heads in transformer layers
     num_layers = 2  # Number of transformer layers
     learning_rate = 1e-3
-    num_epochs = 100
+    num_epochs = 10
     num_sampled_frames = 64
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -454,6 +488,8 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss()
     best_val_acc = 0
 
+    results_file = "videotf_64f2.jsonl"
+
     # Training Loop
     for epoch in tqdm(range(num_epochs), desc="Epochs"):
         print(f"\nEpoch {epoch + 1}/{num_epochs}")
@@ -466,7 +502,7 @@ if __name__ == "__main__":
             device=device,
         )
 
-        val_acc, _ = evaluate(model=model, dataloader=dataloader_val, device=device)
+        val_acc, _ = evaluate(model=model, dataloader=dataloader_val, device=device, results_file=results_file)
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc

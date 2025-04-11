@@ -31,7 +31,7 @@ class VideoQADataset(Dataset):
             num_frames (int): Number of frames to sample from each video.
         """
         with open(json_file, "rb") as f:
-            self.data = pickle.load(f)
+            self.data = json.load(f)
         self.video_dir = video_dir
         self.sampling_fps = sampling_fps
         self.num_frames = num_frames
@@ -186,7 +186,8 @@ class VideoQADataset(Dataset):
             "all_text_inputs": all_text_inputs,
             "data_proc_time": end-start,
             "question_id": question_id,
-            "frame_ids": frame_idx
+            "frame_ids": frame_idx,
+            "video_path": video_path,
         }
 
 
