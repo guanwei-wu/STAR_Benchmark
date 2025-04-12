@@ -176,7 +176,7 @@ class VideoQADataset(Dataset):
         all_text_inputs = []
         for choice in choices:
             all_text_inputs.append(f"{question} [SEP] {choice}")
-        end = perf_counter()
+        end_time = perf_counter()
         return {
             "video_frames": video_frames,  # Video features
             "question": question,
@@ -184,7 +184,9 @@ class VideoQADataset(Dataset):
             "answer_idx": answer_idx,
             "category": item["question_id"].split("_")[0],  # Question category
             "all_text_inputs": all_text_inputs,
-            "data_proc_time": end-start,
+            "data_proc_time": end_time-start_time,
+            "start": start,
+            "end": end,
             "question_id": question_id,
             "frame_ids": frame_idx,
             "video_path": video_path,

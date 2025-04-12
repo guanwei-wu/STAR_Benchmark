@@ -29,12 +29,14 @@ from video_qa_dataset import VideoQADataset
 from qwen_vl_utils import process_vision_info
 
 class QwenVideoQA:
-    def __init__(self):
+    def __init__(self, num_frames):
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             "Qwen/Qwen2.5-VL-3B-Instruct", torch_dtype=torch.bfloat16, device_map="auto", attn_implementation="flash_attention_2"
         )
 
         self.processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
+        
+        self.num_frames = num_frames
 
     def generate(self, inputs, max_new_tokens=500):
         outputs = self.model.generate(
@@ -75,7 +77,7 @@ class QwenVideoQA:
 
         return decoded, prob_list, logits_list
 
-    def video_qa(self, video_path, question, choices, max_new_tokens=128):
+    def video_qa(self, video_path, question, choices, start, end, max_new_tokens=128):
         choice_with_idx = [f"{i+1}: {choice[0]}" for i, choice in enumerate(choices)]
         choice_str = "\n".join(choice_with_idx)
         prompt = f"{question} \n {choice_str} \n Answer with only the option's index number from the given choices directly."
@@ -86,7 +88,9 @@ class QwenVideoQA:
                         {
                             "type": "video",
                             "video": video_path,
-                            "fps": 1.0
+                            "video_start": start,
+                            "video_end": end,
+                            "nframes": self.num_frames
                         },
                         {"type": "text", "text": prompt},
                     ],
@@ -142,7 +146,7 @@ if __name__ == "__main__":
     category_correct = defaultdict(int)
     category_total = defaultdict(int)
 
-    video_qa_model = QwenVideoQA()
+    video_qa_model = QwenVideoQA(num_frames=num_frames)
 
     # Open results file in append mode
     with open(results_file, "a") as results_f:
@@ -150,6 +154,8 @@ if __name__ == "__main__":
             for batch in pbar:
                 start_time = perf_counter()
                 data_time = batch["data_proc_time"][0]
+                start = batch["start"][0].item()
+                end = batch["end"][0].item()
                 video_frames = batch["video_frames"][0].to(device)
                 question = batch["question"][0]
                 choices = batch["choices"]
@@ -161,7 +167,7 @@ if __name__ == "__main__":
                 video_path = batch["video_path"][0]
 
                 # Get model prediction
-                answer, probs, prompt, logits = video_qa_model.video_qa(video_path, question, choices)
+                answer, probs, prompt, logits = video_qa_model.video_qa(video_path, question, choices, start, end)
                 answer_raw = answer
                 print(answer_raw)
                 # answer = int(re.search(r"\d+", answer.split("Answer:")[-1]).group())
@@ -218,3 +224,17 @@ if __name__ == "__main__":
         acc_f.write(f"\nOverall accuracy: {sum(category_correct.values()) / sum(category_total.values()):.4f}\n")
 
     print(f"Results saved to {results_file} and final accuracy saved to {final_accuracy_file}")
+
+
+
+"""
+
+python baselines/qwen2vl.py \
+    --val_pkl "/data/user_data/jamesdin/STAR/data/STAR_val.json" \
+    --video_dir "/data/user_data/jamesdin/STAR/data/Charades_v1_480" \
+    --results_file "analysis/qwen2vl_results.jsonl" \
+    --final_accuracy_file "analysis/qwen2vl_final_accuracy.txt" \
+    --num_frames 8
+
+
+"""
