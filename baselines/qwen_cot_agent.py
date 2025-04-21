@@ -1,78 +1,35 @@
-# # In your code, add these lines at the top of your script (before other imports)
-# import debugpy
-
-# # Set up the debugger to listen on all interfaces
-# debugpy.listen(("0.0.0.0", 5678))  # Use a port number that's available
-# print("Waiting for debugger attach...")
-# debugpy.wait_for_client()  # This line will pause execution until VSCode connects
-# print("Debugger attached!")
-
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from torch.optim import Adagrad
-from tqdm import tqdm
-import torch
-import numpy as np
-from transformers import AutoTokenizer, AutoModel
-import random
-from collections import defaultdict
-import warnings
-from torch.nn.utils.rnn import pad_sequence
-import torch.nn.functional as F
-import re
-import bisect
-import shutil
-import json
-import gc
-from time import perf_counter
-
-# warnings.filterwarnings("ignore")
-
-from IPython.display import HTML
-import os
-import pickle
-from sentence_transformers import SentenceTransformer
-import av
-
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from torch.optim import Adagrad
-from tqdm import tqdm
-import torch
-import numpy as np
-from transformers import AutoTokenizer, AutoProcessor, Qwen2_5_VLForConditionalGeneration
-import random
-from collections import defaultdict
-import warnings
 import argparse
-from torch.nn.utils.rnn import pad_sequence
-import torch.nn.functional as F
-import re
-import bisect
-import shutil
+import gc
 import json
-from time import perf_counter
-
-# warnings.filterwarnings("ignore")
 import os
 import pickle
-from sentence_transformers import SentenceTransformer
-import av
-from transformers import VideoLlavaForConditionalGeneration, VideoLlavaProcessor
-from huggingface_hub import hf_hub_download
-
-# from video_qa_dataset import VideoQADataset
-from qwen_vl_utils import process_vision_info
-
-from huggingface_hub import hf_hub_download
-
-
 import re
+from collections import defaultdict
+from time import perf_counter
+from typing import Any, Dict, List, Optional, Tuple
+
+import av
+import numpy as np
+from IPython.display import HTML
+from tqdm import tqdm
+
 import torch
-from typing import List, Dict, Any, Tuple, Optional
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
+from torch.optim import Adagrad
+from torch.utils.data import DataLoader, Dataset
+
+from transformers import (
+    AutoProcessor,
+    Qwen2_5_VLForConditionalGeneration,
+)
 from transformers.generation.stopping_criteria import StoppingCriteria, StoppingCriteriaList
+from huggingface_hub import hf_hub_download
 
-
+from sentence_transformers import SentenceTransformer
+from qwen_vl_utils import process_vision_info
+from video_qa_dataset import VideoQADataset
 
 class LookEndTokenStoppingCriteria(StoppingCriteria):
     def __init__(self, tokenizer, input_length, stop_string="</look>"):
@@ -97,41 +54,6 @@ class LookEndTokenStoppingCriteria(StoppingCriteria):
             if self.stop_string in generated_text:
                 return True
         return False
-    
-# def process_vision_info(messages):
-#     """Extract image and video inputs from messages."""
-#     image_inputs = []
-#     video_inputs = []
-
-#     # Process messages to extract image and video data
-#     for message in messages:
-#         if message["role"] == "user":
-#             for content_item in message["content"]:
-#                 # Extract video content - using the exact format from your original code
-#                 if content_item.get("type") == "video":
-#                     # Pass the video object directly as is - don't reformat it
-#                     # This preserves the exact structure expected by your processor
-#                     video_path = content_item["video"]
-#                     start = content_item.get("video_start", 0.0)
-#                     end = content_item.get("video_end", None)
-#                     nframes = content_item.get("nframes", 8)
-
-#                     # Your processor might expect the video directly, not in a dictionary
-#                     video_inputs.append(content_item)
-
-#                 # Extract image content
-#                 elif content_item.get("type") == "image":
-#                     # Similarly, preserve the original format for images
-#                     image_inputs.append(content_item)
-
-#         # Also check assistant messages for retrieved frames (which are images)
-#         elif message["role"] == "assistant":
-#             for content_item in message["content"]:
-#                 if isinstance(content_item, dict) and content_item.get("type") == "image":
-#                     image_inputs.append(content_item)
-
-#     print(f"Extracted: {len(video_inputs)} video inputs, {len(image_inputs)} image inputs")
-#     return image_inputs, video_inputs
 
 def retrieve_frames(query: str, video_path: str, start: float, end: float) -> List[Dict]:
     """
@@ -259,37 +181,25 @@ def interactive_video_qa(
         }
     ]
 
-    # Start with empty assistant response
-    # assistant_content = []
-    full_response = ""
+    # Prepare the initial template only once
+    base_text = processor.apply_chat_template(initial_messages, tokenize=False, add_generation_prompt=True)
+    current_text = base_text  # Text to be used for this iteration
     
-    messages = initial_messages.copy()
-
-    # Prepare inputs for the model
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
-    # Extract the vision info but pass the original messages to the processor
-    # This ensures the processor handles the video/image data in its expected format
-    image_inputs, video_inputs = process_vision_info(messages)
-    # print(f"[Iteration {iteration}] Processing with {len(video_inputs)} videos and {len(image_inputs) if image_inputs else 0} images")
+    # Initialize variables
+    full_response = ""  # The accumulated assistant's response
+    image_inputs = None   # Will hold retrieved frames
     
+    # Extract initial video inputs
+    _, video_inputs = process_vision_info(initial_messages)
+    
+    print(f"[Start] Starting generation, max iterations: {max_iterations}")
 
     # Perform iterative generation with look-retrieve cycles
     for iteration in range(max_iterations):
-        # Reset messages to initial state each iteration
-        # This ensures we always have the video in the context
-
-        # If we have assistant content from previous iterations, add it
-        # if assistant_content:
-        #     messages.append({
-        #         "role": "assistant",
-        #         "content": assistant_content
-        #     })
-
-        # Pass the entire messages object to the processor instead of extracted components
-        # This is crucial if your processor expects a specific format for videos/images
+        
+        # Prepare inputs for the processor
         inputs = processor(
-            text=[text],
+            text=[current_text],
             images=image_inputs,
             videos=video_inputs,
             padding=True,
@@ -297,94 +207,71 @@ def interactive_video_qa(
         )
         inputs = inputs.to(device)
 
-        # Generate continuation
-        if iteration > 0 and "</look>" in full_response:
-            # Regular generation for continuation after look tags
-            outputs = video_qa_model.generate(
-                **inputs,
-                max_new_tokens=100,
-                return_dict_in_generate=True,
-                output_scores=True,
-            )
-        else:
-            # First iteration or when we want to stop at look tags
-            # Use a custom stopping criteria at </look> token
-            # outputs = video_qa_model.generate(
-            #     **inputs,
-            #     max_new_tokens=100,
-            #     # eos_token_id=look_end_token_id,  # Stop at </look> token
-            #     return_dict_in_generate=True,
-            #     output_scores=True,
-            # )
-            
-            input_length = len(inputs.input_ids[0])  # Get length of input context
-            look_stopping_criteria = LookEndTokenStoppingCriteria(
-                processor.tokenizer,
-                input_length=input_length  # Pass input length to ignore
-            )
-                        
-            outputs = video_qa_model.generate(
-                **inputs,
-                max_new_tokens=100,
-                stopping_criteria=StoppingCriteriaList([look_stopping_criteria]),
-                # return_dict_in_generate=True,
-                # output_scores=True,
-            )
-
-
-        # Decode the generated text
-        # generated_ids = outputs.sequences[0]
-        generated_ids = outputs[0]
-        generated_text = processor.tokenizer.decode(
-            generated_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
+        # Set up stopping criteria to find </look> tokens in newly generated content
+        input_length = len(inputs.input_ids[0])
+        look_stopping_criteria = LookEndTokenStoppingCriteria(
+            processor.tokenizer,
+            input_length=input_length,
+            stop_string="</look>"
+        )
+        
+        # Generate text with stopping at </look>
+        outputs = video_qa_model.generate(
+            **inputs,
+            max_new_tokens=100,
+            stopping_criteria=StoppingCriteriaList([look_stopping_criteria]),
         )
 
-        # Extract just the new content (avoid repeating previous content)
-        # This might need adjustment based on your specific model output format
-        new_content_start = len(text) if iteration == 0 else len(text) + len(full_response)
-        new_content = generated_text[new_content_start:]
+        # Decode the generated text
+        input_length = len(inputs.input_ids[0])
+        generated_ids = outputs[0]
+        new_token_ids = generated_ids[input_length:]
+
+        # Decode only the new tokens to text
+        new_content = processor.tokenizer.decode(
+            new_token_ids, 
+            skip_special_tokens=False, 
+            clean_up_tokenization_spaces=False
+        )
+        
+        print(f"[Iteration {iteration}] New content: {new_content}")
 
         # Check if we have a look query
         look_match = re.search(r"<look>(.*?)</look>", new_content)
         if look_match:
-            # Extract the query and everything before it
+            # Extract the query
             query = look_match.group(1).strip()
-            before_look = new_content[:look_match.start()]
-
-            # Update full response with content up to the look tag and include the tag itself
-            # This ensures the model's context includes the previous query
-            full_response += before_look + f"<look>{query}</look>\n"
-            # full_response += new_content
-
+            # before_look = new_content[:look_match.end()]  # Include the </look> tag
+            # # before_look = new_content[:look_match.start()]
+            
+            # # Update full response
+            full_response += new_content
+            
+            print(f"[Iteration {iteration}] Retrieved frames for query: {query}")
+            
             # Retrieve frames based on the query
             retrieved_frames = retrieve_frames(query, video_path, start, end)
-
-            # Add the retrieved frames to the assistant content
-            # The text response should include everything generated so far
-            # assistant_content = [
-            #     {"type": "text", "text": full_response}
-            # ] + retrieved_frames
             
-            # for each frame in retrieved_frames, we add a "<|vision_start|><|image_pad|><|vision_end|>" block
-            for frame in retrieved_frames:
-                text += f"<|vision_start|>{frame['image']}<|image_pad|><|vision_end|>"
-            
-            # add the image file to the image_inputs
-            if image_inputs is None:
+            # Add the retrieved frames to image_inputs
+            if not image_inputs:
                 image_inputs = retrieved_frames
             else:
                 image_inputs.extend(retrieved_frames)
-
-            # Important: Print for debugging
-            print(f"[Iteration {iteration}] Retrieved frames for query: {query}")
-            print(f"[Iteration {iteration}] Current response: {full_response}")
-            print(f"[Iteration {iteration}] Retrieved frames for query: {query}")
-
-            print(f"Iteration {iteration+1}: Retrieved frames for query '{query}'")
+            
+            # Update the current text for next iteration
+            # We need to include: original prompt + full response so far + vision markers
+            current_text = base_text + full_response
+            
+            # Add vision markers for each new frame in the format Qwen expects
+            for frame in retrieved_frames:
+                current_text += "\n<|vision_start|><|image_pad|><|vision_end|>"
+                new_content += str(frame)  # can print out the actual retrieved frames for visualization
+                
+                print(f"[Iteration {iteration}] Retrieved frames: {str(frame)}")
+            
         else:
             # No more look queries, finalize the response
             full_response += new_content
-            print(f"Iteration {iteration+1}: Generation complete")
             break
 
     return full_response
@@ -459,7 +346,7 @@ Step 3: So the girl screams because she was startled.
 Answer: 3. Someone surprises her.
 --------------------------------------------------
 
-Now answer the following:
+Now answer the following, you have to look at least twice:
 
 Question: {question}
 Choices:
