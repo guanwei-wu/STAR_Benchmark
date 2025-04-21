@@ -31,6 +31,8 @@ from sentence_transformers import SentenceTransformer
 from qwen_vl_utils import process_vision_info
 from video_qa_dataset import VideoQADataset
 
+from frame_retriever import retrieve_frames
+
 class LookEndTokenStoppingCriteria(StoppingCriteria):
     def __init__(self, tokenizer, input_length, stop_string="</look>"):
         self.tokenizer = tokenizer
@@ -55,60 +57,9 @@ class LookEndTokenStoppingCriteria(StoppingCriteria):
                 return True
         return False
 
-def retrieve_frames(query: str, video_path: str, start: float, end: float) -> List[Dict]:
-    """
-    Retrieve relevant frames based on the query.
-    This is a placeholder for your actual retrieval logic.
-    
-    Args:
-        query: The text query to search for in the video
-        video_path: Path to the video file
-        start: Start time in the video
-        end: End time in the video
-        
-    Returns:
-        List of retrieved frames in the format needed by the model
-    """
-    # Implement your frame retrieval logic here
-    # This could be a call to a separate model or system
-    print(f"Retrieving frames for query: {query}")
-    
-    # In a real implementation, this function would:
-    # 1. Process the query to identify relevant time points in the video
-    # 2. Extract frames from those time points
-    # 3. Return the frames in the format expected by your model
-    
-    # For demonstration, let's assume we've retrieved 3 frames from different times
-    # This is a placeholder - you'll replace this with your actual retrieval logic
-    
-    image_path = "/data/user_data/jamesdin/test_data/001.jpg"  # dummy image
-    messages =  [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image_path},
-                ],
-            }
-    ]
-    retrieved_frames, _ = process_vision_info(messages)
-    
-    # IMPORTANT: Make sure the format matches exactly what your model expects
-    # This should match the format in your original code's user message
-    # return [
-    #     {
-    #         "type": "image",
-    #         "image": f"{video_path}_retrieved_frame_{i}.jpg",  # Path to retrieved frame
-    #         "caption": f"Retrieved frame for query: {query}"
-    #     }
-    #     for i in range(3)  # Returning 3 sample frames
-    # ]
-    return retrieved_frames
-
 def interactive_video_qa(
     video_qa_model,
     processor,
-    system_prompt: str,
-    user_prompt: str,
     video_path: str,
     start: float,
     end: float,
@@ -151,11 +102,13 @@ def interactive_video_qa(
     # look_end_token_id = processor.tokenizer.convert_tokens_to_ids('</look>')
 
     # print(f"New tokens added: <look>: {look_token_id}, </look>: {look_end_token_id}")
+    
+    from prompts import system_prompt, user_prompt
 
     # Format the user prompt with the question and choices
     formatted_user_prompt = user_prompt.format(
         question=question,
-        choices='\n'.join([f"{i+1}. {c}" for i, c in enumerate(choices)])
+        choices=''.join([f"{i+1}. {c}" + chr(10) for i, c in enumerate(choices)])
     )
 
     # Initial messages with video
@@ -276,7 +229,6 @@ def interactive_video_qa(
 
     return full_response
 
-
 import pickle
 import pandas as pd
 
@@ -304,61 +256,11 @@ choices = [x['choice'] for x in example['choices']]
 start = example['start']
 end = example['end']
 
-# --- Construct Prompt ---
-system_prompt = "You are a helpful video reasoning assistant."
-user_prompt = f"""
-You are a video reasoning assistant. When answering questions about video content:
-
-- Use numbered steps to reason through the problem.
-- When you need visual information, write a single line with: <look> your query </look>
-  (This will retrieve frames from the video for you to use in your next step.)
-- End with: Answer: <choice number>. <choice text>
-
-Follow the examples below:
-
---------------------------------------------------
-Example 1
-Question: What does the chef do *after* adding salt?
-Choices:
-1. Tastes the soup.
-2. Adds pepper.
-3. Turns off the stove.
-4. Puts on the lid.
-
-Step 1: I need to see what the chef does right after adding salt.
-<look> chef’s hands immediately after salt is poured </look>
-Step 2: The chef grabs a pepper shaker and adds pepper to the pot.
-Step 3: So the action that follows adding salt is adding pepper.
-Answer: 2. Adds pepper.
---------------------------------------------------
-Example 2
-Question: Why does the girl scream?
-Choices:
-1. She sees a mouse.
-2. She drops her ice cream.
-3. Someone surprises her.
-4. She wins a prize.
-
-Step 1: First, check the scene right before the girl screams.
-<look> frames right before the girl screams </look>
-Step 2: A person jumps out from behind the door.
-Step 3: So the girl screams because she was startled.
-Answer: 3. Someone surprises her.
---------------------------------------------------
-
-Now answer the following, you have to look at least twice:
-
-Question: {question}
-Choices:
-{''.join([f"{i+1}. {choice}" + chr(10) for i, choice in enumerate(choices)])}
-"""
 
 # --- Run Model ---
 result = interactive_video_qa(
     model,
     processor,
-    system_prompt,
-    user_prompt,
     video_path,
     start,
     end,
